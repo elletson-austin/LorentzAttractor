@@ -71,59 +71,6 @@ class State:
         self.input_state.mouse_delta[:] = 0
         self.input_state.scroll_y_delta = 0
 
-    def get_view_matrix(self): # Returns the view matrix for the current camera state
-
-        # Get camera position in world space and what we're looking at
-        cam_pos = self.cam.get_position()      # Where camera is
-        target = self.cam.position_center       # What camera looks at (Lorenz center)
-        world_up = np.array([0, 1, 0], dtype=np.float32)  # World's up direction (Y-axis)
-        
-        # ===== Build camera's coordinate system (3 perpendicular vectors) =====
-        
-        # Forward: direction from camera to target (normalized)
-        forward = target - cam_pos
-        forward = forward / np.linalg.norm(forward)
-        
-        # Right: perpendicular to both forward and world up (normalized)
-        # Cross product: forward × world_up = right (camera's X-axis)
-        right = np.cross(forward, world_up)
-        right = right / np.linalg.norm(right)
-        
-        # Up: perpendicular to both right and forward
-        # Cross product: right × forward = up (camera's actual Y-axis)
-        up = np.cross(right, forward)
-        # Already normalized because right and forward are normalized and perpendicular
-        
-        # ===== Build 4x4 view matrix =====
-        # Layout:
-        # ┌                           ┐
-        # │ Rx  Ry  Rz  Tx │  Right vector + X translation
-        # │ Ux  Uy  Uz  Ty │  Up vector + Y translation
-        # │ Fx  Fy  Fz  Tz │  Forward vector + Z translation
-        # │ 0   0   0   1  │  Homogeneous coordinate
-        # └                           ┘
-        
-        view = np.eye(4, dtype=np.float32)  # Start with identity matrix
-        
-        # Top-left 3x3: Rotation (camera basis vectors)
-        view[0, :3] = right        # Row 0: Right vector (Rx, Ry, Rz)
-        view[1, :3] = up           # Row 1: Up vector (Ux, Uy, Uz)
-        view[2, :3] = -forward     # Row 2: Forward vector (Fx, Fy, Fz)
-                                # Negative because OpenGL looks down -Z axis
-        
-        # Right column (first 3 rows): Translation
-        # Move world so camera is at origin
-        # Dot products project camera position onto each camera axis
-        view[0, 3] = -np.dot(right, cam_pos)     # Tx: Translation along camera's X
-        view[1, 3] = -np.dot(up, cam_pos)        # Ty: Translation along camera's Y
-        view[2, 3] = np.dot(forward, cam_pos)    # Tz: Translation along camera's Z
-        
-        # Bottom row [0, 0, 0, 1] already set by np.eye()
-        
-        # OpenGL uses column-major order, so transpose before flattening
-        return view.T.flatten()
-
-# returns the 3d vector of direction of a point
 def lorenz_map(x: float, y: float, z: float, sigma: float = 10.0, 
                rho: float = 28.0, beta: float = 8.0/3.0) -> np.ndarray:
     dx = sigma * (y - x)
@@ -148,6 +95,158 @@ def lorenz_system(points: np.ndarray, dt: float = 0.001, sigma: float = 10.0,
 
     return points_local
 
+
+def get_view_matrix(self): # Returns the view matrix for the current camera state
+
+    # Get camera position in world space and what we're looking at
+    cam_pos = self.cam.get_position()      # Where camera is
+    target = self.cam.position_center       # What camera looks at (Lorenz center)
+    world_up = np.array([0, 1, 0], dtype=np.float32)  # World's up direction (Y-axis)
+    
+    # ===== Build camera's coordinate system (3 perpendicular vectors) =====
+    
+    # Forward: direction from camera to target (normalized)
+    forward = target - cam_pos
+    forward = forward / np.linalg.norm(forward)
+    
+    # Right: perpendicular to both forward and world up (normalized)
+    # Cross product: forward × world_up = right (camera's X-axis)
+    right = np.cross(forward, world_up)
+    right = right / np.linalg.norm(right)
+    
+    # Up: perpendicular to both right and forward
+    # Cross product: right × forward = up (camera's actual Y-axis)
+    up = np.cross(right, forward)
+    # Already normalized because right and forward are normalized and perpendicular
+    
+    # ===== Build 4x4 view matrix =====
+    # Layout:
+    # ┌                           ┐
+    # │ Rx  Ry  Rz  Tx │  Right vector + X translation
+    # │ Ux  Uy  Uz  Ty │  Up vector + Y translation
+    # │ Fx  Fy  Fz  Tz │  Forward vector + Z translation
+    # │ 0   0   0   1  │  Homogeneous coordinate
+    # └                           ┘
+    
+    view = np.eye(4, dtype=np.float32)  # Start with identity matrix
+    
+    # Top-left 3x3: Rotation (camera basis vectors)
+    view[0, :3] = right        # Row 0: Right vector (Rx, Ry, Rz)
+    view[1, :3] = up           # Row 1: Up vector (Ux, Uy, Uz)
+    view[2, :3] = -forward     # Row 2: Forward vector (Fx, Fy, Fz)
+                                # Negative because OpenGL looks down -Z axis
+    
+    # Right column (first 3 rows): Translation
+    # Move world so camera is at origin
+    # Dot products project camera position onto each camera axis
+    view[0, 3] = -np.dot(right, cam_pos)     # Tx: Translation along camera's X
+    view[1, 3] = -np.dot(up, cam_pos)        # Ty: Translation along camera's Y
+    view[2, 3] = np.dot(forward, cam_pos)    # Tz: Translation along camera's Z
+    
+    # Bottom row [0, 0, 0, 1] already set by np.eye()
+    
+    # OpenGL uses column-major order, so transpose before flattening
+    return view.T.flatten()
+
+def get_projection_matrix(self, aspect_ratio):
+    """
+    Returns 4x4 perspective projection matrix as flattened array for OpenGL.
+    Creates the "things far away look smaller" effect.
+    
+    aspect_ratio: width / height (prevents stretching)
+    """
+    
+    # Convert FOV to radians and set clipping planes
+    fov_rad = np.radians(self.fov)  # Field of view in radians
+    near = 0.1     # Near clipping plane (minimum render distance)
+    far = 500.0    # Far clipping plane (maximum render distance)
+    
+    # Calculate focal length (controls zoom)
+    f = 1.0 / np.tan(fov_rad / 2.0)
+    
+    # ===== Build 4x4 projection matrix =====
+    # Layout:
+    # ┌                                      ┐
+    # │ f/aspect   0         0          0    │  Row 0: Scale X (adjusted for aspect)
+    # │ 0          f         0          0    │  Row 1: Scale Y (based on FOV)
+    # │ 0          0    (f+n)/(n-f)    -1    │  Row 2: Map Z depth & trigger perspective
+    # │ 0          0    2*f*n/(n-f)     0    │  Row 3: Perspective divide value
+    # └                                      ┘
+    # Where: f = far plane, n = near plane
+    
+    proj = np.zeros((4, 4), dtype=np.float32)
+    
+    # Row 0, Col 0: X-coordinate scaling (adjusted for aspect ratio)
+    # Wider screens (aspect > 1) need less X scaling to prevent horizontal stretching
+    # Taller screens (aspect < 1) need more X scaling to prevent horizontal squishing
+    proj[0, 0] = f / aspect_ratio
+    
+    # Row 1, Col 1: Y-coordinate scaling (based purely on FOV)
+    # This creates the vertical field of view
+    # Larger f (smaller FOV) = more zoom = larger scale factor
+    proj[1, 1] = f
+    
+    # Row 2, Col 2: Z-coordinate depth mapping (non-linear)
+    # Maps camera space [near, far] to clip space [-1, 1] for depth buffer
+    # This preserves more precision for nearby objects (important for z-fighting)
+    proj[2, 2] = (far + near) / (near - far)
+    
+    # Row 2, Col 3: Perspective divide trigger (THE KEY TO PERSPECTIVE!)
+    # This copies -z into the w component
+    # After matrix multiply: w' = -z
+    # GPU then divides (x', y', z') by w' = -z
+    # Result: things at z=10 shrink 10×, things at z=50 shrink 50×
+    # We use -z (not distance) because perspective is about DEPTH, not radial distance
+    proj[2, 3] = -1.0
+    
+    # Row 3, Col 2: Z-coordinate offset for depth mapping
+    # Works with proj[2,2] to create the non-linear depth mapping
+    # This value ends up in the z' component after multiplication
+    proj[3, 2] = (2.0 * far * near) / (near - far)
+    
+    # All other values stay 0 (set by np.zeros)
+    # Notably proj[3, 3] = 0 (not 1!) because we want w' = -z, not w' = -z + 1
+    
+    # OpenGL uses column-major order, so transpose before flattening
+    # This converts our row-major numpy array to OpenGL's expected format
+    return proj.T.flatten()
+
+def create_compute_shader()
+    COMPUTE_SHADER = """
+    #version 430
+
+    layout(local_size_x = 256) in;
+
+    layout(std430, binding = 0) buffer PointsBuffer {
+        vec4 points[];
+    };
+
+    uniform float dt;
+    uniform float sigma;
+    uniform float rho;
+    uniform float beta;
+    uniform int steps;
+
+    void main() {
+        uint idx = gl_GlobalInvocationID.x;
+        if (idx >= points.length()) return;
+        
+        vec3 p = points[idx].xyz;
+        
+        // Integrate Lorenz system for 'steps' iterations
+        for (int i = 0; i < steps; i++) {
+            float dx = sigma * (p.y - p.x);
+            float dy = p.x * (rho - p.z) - p.y;
+            float dz = p.x * p.y - beta * p.z;
+            
+            p.x += dx * dt;
+            p.y += dy * dt;
+            p.z += dz * dt;
+        }
+        
+        points[idx].xyz = p;
+    }
+    """
     
 # Initializes GLFW and sets callbacks
 def glfw_init(title: str = "Lorenz Attractor"): 
