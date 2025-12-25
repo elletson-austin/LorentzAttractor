@@ -211,7 +211,7 @@ def get_projection_matrix(self, aspect_ratio):
     # This converts our row-major numpy array to OpenGL's expected format
     return proj.T.flatten()
 
-def create_compute_shader()
+def create_compute_shader():
     COMPUTE_SHADER = """
     #version 430
 
@@ -247,7 +247,47 @@ def create_compute_shader()
         points[idx].xyz = p;
     }
     """
+    return COMPUTE_SHADER
     
+def create_vertex_shader():
+    VERTEX_SHADER = """
+    #version 330
+
+    in vec3 in_position;
+
+    uniform mat4 view;
+    uniform mat4 projection;
+
+    out vec3 frag_pos;
+
+    void main() {
+        frag_pos = in_position;
+        gl_Position = projection * view * vec4(in_position, 1.0);
+    }
+    """
+    return VERTEX_SHADER
+
+def create_fragment_shader():
+    
+    FRAGMENT_SHADER = """
+    #version 330
+
+    in vec3 frag_pos;
+    out vec4 fragColor;
+
+    void main() {
+        // Color based on position
+        vec3 color = vec3(
+            0.5 + 0.5 * sin(frag_pos.z * 0.05),
+            0.5 + 0.5 * cos(frag_pos.x * 0.05),
+            0.8
+        );
+        fragColor = vec4(color, 1.0);
+    }
+    """
+    return FRAGMENT_SHADER
+
+
 # Initializes GLFW and sets callbacks
 def glfw_init(title: str = "Lorenz Attractor"): 
 
@@ -391,26 +431,56 @@ def glfw_init(title: str = "Lorenz Attractor"):
 
     return window, ctx, state
 
+def create_inital_points(num_points: int) -> np.ndarray:
+    initial_points = np.random.randn(num_points, 4).astype(np.float32)
+    initial_points[:, :3] *= 2.0  # Small spread
+    initial_points[:, :3] += [1.0, 1.0, 1.0]  # Center near (1,1,1)
+    initial_points[:, 3] = 1.0  # w component
+    return initial_points
+
+def setup_compute_program(ctx):
+    compute_program = ctx.compute_shader(create_compute_shader())
+    compute_program['dt'] = 0.001
+    compute_program['sigma'] = 10.0
+    compute_program['rho'] = 28.0
+    compute_program['beta'] = 8.0 / 3.0
+    compute_program['steps'] = 100
+    return compute_program
+
+def setup_render_program():
+    render_program = ctx.program(
+        vertex_shader=create_vertex_shader(),
+        fragment_shader=create_fragment_shader()
+    )
+    return render_program
 def main():
 
     # Starting parameters
-    num_points = 1000
-    buffer_len = 100
+    buffer_len = 1000
 
-    # Initialize GLFW and create a window along with the global variables
-    global is_fullscreen, windowed_pos, windowed_size
-    is_fullscreen = True
-    windowed_pos = (100, 100)
-    windowed_size = (1280, 800)
     window, ctx, state = glfw_init()
 
-    # Initialize the beginning state of the system
-    tail_coords = np.zeros((buffer_len, num_points, 3), dtype=np.float32)
-    tail_coords[0] = np.zeros((num_points, 3), dtype=np.float32)
+    
+    # Initialize points near the attractor starting region
+    num_points = 10000
+    initial_points = create_inital_points(num_points)
+    
+    # Create buffer (used by both compute and render)
+    points_buffer = ctx.buffer(initial_points)
 
-    # tail_coords is a ring buffer of shape (buffer_length, num_points, 3)
-    head = 0  # head points to where the NEXT value will be written
-    current = tail_coords[0]
+    # Create compute shader program
+    compute_program = setup_compute_program(ctx)
+    render_program = setup_render_program(ctx)
+    # Create render program
+    render_program = ctx.program(
+        vertex_shader=create_vertex_shader(),
+        fragment_shader=create_fragment_shader()
+    )
+    # Create VAO (Vertex Array Object)
+    vao = ctx.vertex_array(
+        render_program,
+        [(points_buffer, '3f 1f', 'in_position')]  # 3 floats for xyz, 1 for w
+    )
     
     # Main loop
     while not glfw.window_should_close(window):
