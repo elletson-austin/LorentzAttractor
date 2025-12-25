@@ -71,6 +71,58 @@ class State:
         self.input_state.mouse_delta[:] = 0
         self.input_state.scroll_y_delta = 0
 
+    def get_view_matrix(self): # Returns the view matrix for the current camera state
+
+        # Get camera position in world space and what we're looking at
+        cam_pos = self.cam.get_position()      # Where camera is
+        target = self.cam.position_center       # What camera looks at (Lorenz center)
+        world_up = np.array([0, 1, 0], dtype=np.float32)  # World's up direction (Y-axis)
+        
+        # ===== Build camera's coordinate system (3 perpendicular vectors) =====
+        
+        # Forward: direction from camera to target (normalized)
+        forward = target - cam_pos
+        forward = forward / np.linalg.norm(forward)
+        
+        # Right: perpendicular to both forward and world up (normalized)
+        # Cross product: forward × world_up = right (camera's X-axis)
+        right = np.cross(forward, world_up)
+        right = right / np.linalg.norm(right)
+        
+        # Up: perpendicular to both right and forward
+        # Cross product: right × forward = up (camera's actual Y-axis)
+        up = np.cross(right, forward)
+        # Already normalized because right and forward are normalized and perpendicular
+        
+        # ===== Build 4x4 view matrix =====
+        # Layout:
+        # ┌                           ┐
+        # │ Rx  Ry  Rz  Tx │  Right vector + X translation
+        # │ Ux  Uy  Uz  Ty │  Up vector + Y translation
+        # │ Fx  Fy  Fz  Tz │  Forward vector + Z translation
+        # │ 0   0   0   1  │  Homogeneous coordinate
+        # └                           ┘
+        
+        view = np.eye(4, dtype=np.float32)  # Start with identity matrix
+        
+        # Top-left 3x3: Rotation (camera basis vectors)
+        view[0, :3] = right        # Row 0: Right vector (Rx, Ry, Rz)
+        view[1, :3] = up           # Row 1: Up vector (Ux, Uy, Uz)
+        view[2, :3] = -forward     # Row 2: Forward vector (Fx, Fy, Fz)
+                                # Negative because OpenGL looks down -Z axis
+        
+        # Right column (first 3 rows): Translation
+        # Move world so camera is at origin
+        # Dot products project camera position onto each camera axis
+        view[0, 3] = -np.dot(right, cam_pos)     # Tx: Translation along camera's X
+        view[1, 3] = -np.dot(up, cam_pos)        # Ty: Translation along camera's Y
+        view[2, 3] = np.dot(forward, cam_pos)    # Tz: Translation along camera's Z
+        
+        # Bottom row [0, 0, 0, 1] already set by np.eye()
+        
+        # OpenGL uses column-major order, so transpose before flattening
+        return view.T.flatten()
+
 # returns the 3d vector of direction of a point
 def lorenz_map(x: float, y: float, z: float, sigma: float = 10.0, 
                rho: float = 28.0, beta: float = 8.0/3.0) -> np.ndarray:
