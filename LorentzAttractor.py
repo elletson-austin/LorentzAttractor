@@ -58,7 +58,8 @@ class State:
     cam: Camera = field(default_factory=Camera)
     window_state: WindowState = field(default_factory=WindowState)
     input_state: InputState = field(default_factory=InputState)
-
+    ctx = moderngl.create_context() # Create ModernGL context
+    
     def update(self, dt: float = 0.016) -> None: # Update the camera position and rotation
         self.cam.distance -= dt * 0.1 * self.input_state.scroll_delta
         if self.cam.distance < 0.0:
@@ -289,7 +290,12 @@ def create_fragment_shader():
 
 
 # Initializes GLFW and sets callbacks
-def glfw_init(title: str = "Lorenz Attractor"): 
+def glfw_init(state_global: State,title: str = "Lorenz Attractor"): 
+
+    state = state_global
+    cam = state.cam
+    window_state = state.window_state
+    input_state = state.input_state
 
     if not glfw.init():
         raise RuntimeError("Failed to initialize GLFW")
@@ -313,10 +319,6 @@ def glfw_init(title: str = "Lorenz Attractor"):
     glfw.swap_interval(1)
 
     # Set GLFW callbacks
-    state = State()
-    cam = state.cam
-    window_state = state.window_state
-    input_state = state.input_state
     def framebuffer_size_callback(window, width, height): # Sets the viewport to the current framebuffer size
         if width == 0 or height == 0:
             return
@@ -422,14 +424,13 @@ def glfw_init(title: str = "Lorenz Attractor"):
     glfw.set_scroll_callback(window, make_scroll_callback(cam))
     glfw.set_cursor_pos_callback(window, make_cursor_pos_callback(cam)) 
 
-    # Create ModernGL context
-    ctx = moderngl.create_context()
+    
 
     # Set initial viewport
     width, height = glfw.get_framebuffer_size(window)
     ctx.viewport = (0, 0, width, height)
 
-    return window, ctx, state
+    return window, ctx
 
 def create_inital_points(num_points: int) -> np.ndarray:
     initial_points = np.random.randn(num_points, 4).astype(np.float32)
@@ -457,9 +458,8 @@ def main():
 
     # Starting parameters
     buffer_len = 1000
-
-    window, ctx, state = glfw_init()
-
+    state = State()
+    window, ctx, state = glfw_init(state)
     
     # Initialize points near the attractor starting region
     num_points = 10000
