@@ -3,18 +3,18 @@ import glfw
 from numba import njit, prange
 import numpy as np
 import moderngl
-
+import time
 
 @dataclass
-class Camera: # Simple camera class to manage position, rotation, fov, and distance
+class Camera:
     position_center: np.ndarray = field(
-        default_factory=lambda: np.array([0.0, 0.0, 0.0], dtype=np.float32)
+        default_factory=lambda: np.array([0.0, 20.0, 25.0], dtype=np.float32)  # ✓ Lorenz center
     )
     rotation: np.ndarray = field(
-        default_factory=lambda: np.array([0.0, 0.0, 0.0], dtype=np.float32)
+        default_factory=lambda: np.array([20.0, 45.0, 0.0], dtype=np.float32)  # ✓ Good angle
     )
-    fov: float = 90.0
-    distance: float = 1.0     # distance from the camera to the view center
+    fov: float = 130.0  # ✓ Narrower FOV
+    distance: float = 300.0  # ✓ Farther back
 
     def zoom(self, zoom_amount: float) -> None: # Multiplicative change in fov as well as clamping
         self.fov *= zoom_amount
@@ -31,60 +31,37 @@ class Camera: # Simple camera class to manage position, rotation, fov, and dista
 
         x = self.distance * np.cos(pitch) * np.sin(yaw)
         y = self.distance * np.sin(pitch)
-        z = -self.distance * np.cos(pitch) * np.cos(yaw)
+        z = self.distance * np.cos(pitch) * np.cos(yaw)
 
         return self.position_center + np.array([x, y, z], dtype=np.float32)
 
-    def get_view_matrix(self): # Returns the view matrix for the current camera state
-
-        # Get camera position in world space and what we're looking at
-        cam_pos = self.get_position()      # Where camera is
-        target = self.position_center       # What camera looks at (Lorenz center)
-        world_up = np.array([0, 1, 0], dtype=np.float32)  # World's up direction (Y-axis)
+    def get_view_matrix(self):
+        cam_pos = self.get_position()
+        target = self.position_center
+        world_up = np.array([0, 1, 0], dtype=np.float32)
         
-        # ===== Build camera's coordinate system (3 perpendicular vectors) =====
-        
-        # Forward: direction from camera to target (normalized)
         forward = target - cam_pos
         forward = forward / np.linalg.norm(forward)
         
-        # Right: perpendicular to both forward and world up (normalized)
-        # Cross product: forward × world_up = right (camera's X-axis)
         right = np.cross(forward, world_up)
         right = right / np.linalg.norm(right)
         
-        # Up: perpendicular to both right and forward
-        # Cross product: right × forward = up (camera's actual Y-axis)
         up = np.cross(right, forward)
-        # Already normalized because right and forward are normalized and perpendicular
         
-        # ===== Build 4x4 view matrix =====
-        # Layout:
-        # ┌                           ┐
-        # │ Rx  Ry  Rz  Tx │  Right vector + X translation
-        # │ Ux  Uy  Uz  Ty │  Up vector + Y translation
-        # │ Fx  Fy  Fz  Tz │  Forward vector + Z translation
-        # │ 0   0   0   1  │  Homogeneous coordinate
-        # └                           ┘
+        view = np.eye(4, dtype=np.float32)
         
-        view = np.eye(4, dtype=np.float32)  # Start with identity matrix
+        # Rotation part
+        view[0, :3] = right
+        view[1, :3] = up
+        view[2, :3] = -forward
         
-        # Top-left 3x3: Rotation (camera basis vectors)
-        view[0, :3] = right        # Row 0: Right vector (Rx, Ry, Rz)
-        view[1, :3] = up           # Row 1: Up vector (Ux, Uy, Uz)
-        view[2, :3] = -forward     # Row 2: Forward vector (Fx, Fy, Fz)
-                                    # Negative because OpenGL looks down -Z axis
+        # Translation part - ALL NEGATIVE
+        view[0, 3] = -np.dot(right, cam_pos)
+        view[1, 3] = -np.dot(up, cam_pos)
+        view[2, 3] = -np.dot(-forward, cam_pos)  # Double negative = positive np.dot(forward, cam_pos)
         
-        # Right column (first 3 rows): Translation
-        # Move world so camera is at origin
-        # Dot products project camera position onto each camera axis
-        view[0, 3] = -np.dot(right, cam_pos)     # Tx: Translation along camera's X
-        view[1, 3] = -np.dot(up, cam_pos)        # Ty: Translation along camera's Y
-        view[2, 3] = np.dot(forward, cam_pos)    # Tz: Translation along camera's Z
+        # Bottom row should be [0, 0, 0, 1] - already set by np.eye()
         
-        # Bottom row [0, 0, 0, 1] already set by np.eye()
-        
-        # OpenGL uses column-major order, so transpose before flattening
         return view.T.flatten()
 
     def get_projection_matrix(self, aspect_ratio):
@@ -99,56 +76,18 @@ class Camera: # Simple camera class to manage position, rotation, fov, and dista
         fov_rad = np.radians(self.fov)  # Field of view in radians
         near = 0.1     # Near clipping plane (minimum render distance)
         far = 500.0    # Far clipping plane (maximum render distance)
-        
-        # Calculate focal length (controls zoom)
-        f = 1.0 / np.tan(fov_rad / 2.0)
-        
-        # ===== Build 4x4 projection matrix =====
-        # Layout:
-        # ┌                                      ┐
-        # │ f/aspect   0         0          0    │  Row 0: Scale X (adjusted for aspect)
-        # │ 0          f         0          0    │  Row 1: Scale Y (based on FOV)
-        # │ 0          0    (f+n)/(n-f)    -1    │  Row 2: Map Z depth & trigger perspective
-        # │ 0          0    2*f*n/(n-f)     0    │  Row 3: Perspective divide value
-        # └                                      ┘
-        # Where: f = far plane, n = near plane
-        
+        focal_len = 1.0 / np.tan(fov_rad / 2.0)  # Calculate focal length (controls zoom)
+
         proj = np.zeros((4, 4), dtype=np.float32)
-        
-        # Row 0, Col 0: X-coordinate scaling (adjusted for aspect ratio)
-        # Wider screens (aspect > 1) need less X scaling to prevent horizontal stretching
-        # Taller screens (aspect < 1) need more X scaling to prevent horizontal squishing
-        proj[0, 0] = f / aspect_ratio
-        
-        # Row 1, Col 1: Y-coordinate scaling (based purely on FOV)
-        # This creates the vertical field of view
-        # Larger f (smaller FOV) = more zoom = larger scale factor
-        proj[1, 1] = f
-        
-        # Row 2, Col 2: Z-coordinate depth mapping (non-linear)
-        # Maps camera space [near, far] to clip space [-1, 1] for depth buffer
-        # This preserves more precision for nearby objects (important for z-fighting)
+        proj[0, 0] = focal_len / aspect_ratio
+        proj[1, 1] = focal_len
         proj[2, 2] = (far + near) / (near - far)
+        proj[2, 3] = (2.0 * far * near) / (near - far)
+        proj[3, 2] = -1.0
         
-        # Row 2, Col 3: Perspective divide trigger (THE KEY TO PERSPECTIVE!)
-        # This copies -z into the w component
-        # After matrix multiply: w' = -z
-        # GPU then divides (x', y', z') by w' = -z
-        # Result: things at z=10 shrink 10×, things at z=50 shrink 50×
-        # We use -z (not distance) because perspective is about DEPTH, not radial distance
-        proj[2, 3] = -1.0
-        
-        # Row 3, Col 2: Z-coordinate offset for depth mapping
-        # Works with proj[2,2] to create the non-linear depth mapping
-        # This value ends up in the z' component after multiplication
-        proj[3, 2] = (2.0 * far * near) / (near - far)
-        
-        # All other values stay 0 (set by np.zeros)
         # Notably proj[3, 3] = 0 (not 1!) because we want w' = -z, not w' = -z + 1
-        
-        # OpenGL uses column-major order, so transpose before flattening
-        # This converts our row-major numpy array to OpenGL's expected format
         return proj.T.flatten()
+
 @dataclass
 class WindowState: # Tracks the window state for fullscreen toggling
     is_fullscreen: bool = True
@@ -166,25 +105,27 @@ class InputState: # Tracks the state of the input devices
     mouse_pressed: bool = False
     scroll_delta: float = 0.0
 
-
 @dataclass
 class State:
     cam: Camera = field(default_factory=Camera)
     window_state: WindowState = field(default_factory=WindowState)
     input_state: InputState = field(default_factory=InputState)
-    ctx = moderngl.create_context() # Create ModernGL context
+    ctx: moderngl.Context = field(default=None)
 
-    def update(self, dt: float = 0.016) -> None: # Update the camera position and rotation
-        self.cam.distance -= dt * 0.1 * self.input_state.scroll_delta
-        if self.cam.distance < 0.0:
-            self.cam.distance = 0.0
-        self.cam.rotation[0] += dt * 0.1 * self.input_state.mouse_delta[1]
-        self.cam.rotation[1] += dt * 0.1 * self.input_state.mouse_delta[0]
-        self.cam.rotation[0] = np.clip(self.cam.rotation[0], -89.0, 89.0)
+    def update(self, dt: float = 0.016) -> None:
+        if abs(self.input_state.scroll_delta) > 0:
+            self.cam.distance -= self.input_state.scroll_delta * 10.0
+            self.cam.distance = np.clip(self.cam.distance, 10.0, 300.0)
+        
+        # ONLY rotate when mouse button is held
+        if self.input_state.mouse_pressed:
+            self.cam.rotation[0] += self.input_state.mouse_delta[1] * 0.2
+            self.cam.rotation[1] += self.input_state.mouse_delta[0] * 0.2
+            self.cam.rotation[0] = np.clip(self.cam.rotation[0], -89.0, 89.0)
 
-        # Reset input deltas after processing
+        # Reset deltas
         self.input_state.mouse_delta[:] = 0
-        self.input_state.scroll_y_delta = 0
+        self.input_state.scroll_delta = 0
 
 def lorenz_map(x: float, y: float, z: float, sigma: float = 10.0, 
                rho: float = 28.0, beta: float = 8.0/3.0) -> np.ndarray:
@@ -209,10 +150,6 @@ def lorenz_system(points: np.ndarray, dt: float = 0.001, sigma: float = 10.0,
             points_local[point, 2] += dz * dt
 
     return points_local
-
-
-
-
 
 
 def create_compute_shader():
@@ -257,7 +194,7 @@ def create_vertex_shader():
     VERTEX_SHADER = """
     #version 330
 
-    in vec3 in_position;
+    in vec4 in_position;
 
     uniform mat4 view;
     uniform mat4 projection;
@@ -265,8 +202,9 @@ def create_vertex_shader():
     out vec3 frag_pos;
 
     void main() {
-        frag_pos = in_position;
-        gl_Position = projection * view * vec4(in_position, 1.0);
+        frag_pos = in_position.xyz;
+        gl_Position = projection * view * vec4(in_position.xyz, 1.0);
+        gl_PointSize = 0.5; 
     }
     """
     return VERTEX_SHADER
@@ -280,13 +218,8 @@ def create_fragment_shader():
     out vec4 fragColor;
 
     void main() {
-        // Color based on position
-        vec3 color = vec3(
-            0.5 + 0.5 * sin(frag_pos.z * 0.05),
-            0.5 + 0.5 * cos(frag_pos.x * 0.05),
-            0.8
-        );
-        fragColor = vec4(color, 1.0);
+        // BRIGHT RED - impossible to miss
+        fragColor = vec4(1.0, 0.0, 0.0, 1.0);
     }
     """
     return FRAGMENT_SHADER
@@ -294,11 +227,6 @@ def create_fragment_shader():
 
 # Initializes GLFW and sets callbacks
 def glfw_init(state_global: State,title: str = "Lorenz Attractor"): 
-
-    state = state_global
-    cam = state.cam
-    window_state = state.window_state
-    input_state = state.input_state
 
     if not glfw.init():
         raise RuntimeError("Failed to initialize GLFW")
@@ -310,6 +238,11 @@ def glfw_init(state_global: State,title: str = "Lorenz Attractor"):
     glfw.window_hint(glfw.OPENGL_FORWARD_COMPAT, glfw.TRUE)
     glfw.window_hint(glfw.RESIZABLE, glfw.TRUE) # Allow resizing
 
+    state = state_global
+    cam = state.cam
+    window_state = state.window_state
+    input_state = state.input_state
+    
     # Fullscreen resolution
     monitor = glfw.get_primary_monitor()
     mode = glfw.get_video_mode(monitor)
@@ -320,6 +253,10 @@ def glfw_init(state_global: State,title: str = "Lorenz Attractor"):
 
     glfw.make_context_current(window)
     glfw.swap_interval(1)
+
+    state.ctx = moderngl.create_context() # Create ModernGL context
+    state.ctx.enable(moderngl.DEPTH_TEST)
+    state.ctx.enable(moderngl.PROGRAM_POINT_SIZE)
 
     # Set GLFW callbacks
     def framebuffer_size_callback(window, width, height): # Sets the viewport to the current framebuffer size
@@ -413,7 +350,7 @@ def glfw_init(state_global: State,title: str = "Lorenz Attractor"):
         return scroll_callback
     def make_cursor_pos_callback(cam):
         def cursor_pos_callback(window, xpos, ypos):
-            print(f"Mouse cursor at ({xpos}, {ypos})")
+            #print(f"Mouse cursor at ({xpos}, {ypos})")
             # Update mouse position and delta
             inp = state.input_state
             inp.mouse_delta[0] += xpos - inp.mouse_pos[0]
@@ -431,9 +368,9 @@ def glfw_init(state_global: State,title: str = "Lorenz Attractor"):
 
     # Set initial viewport
     width, height = glfw.get_framebuffer_size(window)
-    ctx.viewport = (0, 0, width, height)
+    state.ctx.viewport = (0, 0, width, height)
 
-    return window, ctx
+    return window
 
 def create_inital_points(num_points: int) -> np.ndarray:
     initial_points = np.random.randn(num_points, 4).astype(np.float32)
@@ -444,57 +381,118 @@ def create_inital_points(num_points: int) -> np.ndarray:
 
 def setup_compute_program(ctx):
     compute_program = ctx.compute_shader(create_compute_shader())
-    compute_program['dt'] = 0.001
-    compute_program['sigma'] = 10.0
-    compute_program['rho'] = 28.0
-    compute_program['beta'] = 8.0 / 3.0
-    compute_program['steps'] = 100
+    compute_program['dt'] = 0.0001
+    compute_program['sigma'] = 11.0
+    compute_program['rho'] = 29.0
+    compute_program['beta'] = 8.0 / 5.0
+    compute_program['steps'] = 50
     return compute_program
 
-def setup_render_program():
-    render_program = ctx.program(
-        vertex_shader=create_vertex_shader(),
-        fragment_shader=create_fragment_shader()
-    )
-    return render_program
 def main():
 
     # Starting parameters
-    buffer_len = 1000
     state = State()
-    window, ctx, state = glfw_init(state)
-    
+    window = glfw_init(state)
+
     # Initialize points near the attractor starting region
-    num_points = 10000
+    num_points = 100000
     initial_points = create_inital_points(num_points)
     
-    # Create buffer (used by both compute and render)
-    points_buffer = ctx.buffer(initial_points)
+    print("=== INITIAL SETUP ===")
+    print(f"Initial points range:")
+    print(f"  X: [{initial_points[:,0].min():.2f}, {initial_points[:,0].max():.2f}]")
+    print(f"  Y: [{initial_points[:,1].min():.2f}, {initial_points[:,1].max():.2f}]")
+    print(f"  Z: [{initial_points[:,2].min():.2f}, {initial_points[:,2].max():.2f}]")
 
-    # Create compute shader program
-    compute_program = setup_compute_program(ctx)
-    render_program = setup_render_program(ctx)
-    # Create render program
-    render_program = ctx.program(
+    # Create buffer (used by both compute and render)
+    points_buffer = state.ctx.buffer(initial_points)
+
+    compute_program = setup_compute_program(state.ctx)
+
+    render_program = state.ctx.program(
         vertex_shader=create_vertex_shader(),
         fragment_shader=create_fragment_shader()
     )
     # Create VAO (Vertex Array Object)
-    vao = ctx.vertex_array(
+    vao = state.ctx.vertex_array(
         render_program,
-        [(points_buffer, '3f 1f', 'in_position')]  # 3 floats for xyz, 1 for w
+        [(points_buffer, '4f', 'in_position')]  # 4 floats matching vec4
     )
-    
-    # Main loop
+    frame_count = 0
     while not glfw.window_should_close(window):
-
         glfw.poll_events()
         state.update()
 
-        # Just clear the screen for now
-        ctx.clear(0.2, 0.2, 0.5, 1.0)
+        # Bind buffer for compute shader
+        points_buffer.bind_to_storage_buffer(0)
+        
+        # Run compute shader (update Lorenz system)
+        compute_program.run(group_x=(num_points + 255) // 256)
+        if frame_count == 1:
+            data = np.frombuffer(points_buffer.read(), dtype=np.float32).reshape(-1, 4)
+            print(f"\n=== FRAME 1 DEBUG ===")
+            print(f"Points after compute:")
+            print(f"  X: [{data[:,0].min():.2f}, {data[:,0].max():.2f}]")
+            print(f"  Y: [{data[:,1].min():.2f}, {data[:,1].max():.2f}]")
+            print(f"  Z: [{data[:,2].min():.2f}, {data[:,2].max():.2f}]")
+            
+            cam_pos = state.cam.get_position()
+            print(f"\nCamera:")
+            print(f"  Position: {cam_pos}")
+            print(f"  Target: {state.cam.position_center}")
+            print(f"  Distance to target: {np.linalg.norm(cam_pos - state.cam.position_center):.2f}")
+            print(f"  Rotation: {state.cam.rotation}")
+            print(f"  FOV: {state.cam.fov}")
+            
+            # Test: manually transform one point
+            test_point = data[0, :3]
+            print(f"\nTest point: {test_point}")
+            
+            # Get matrices
+            width, height = glfw.get_framebuffer_size(window)
+            view = state.cam.get_view_matrix().reshape(4, 4)
+            proj = state.cam.get_projection_matrix(width/height).reshape(4, 4)
+            
+            # Transform test point
+            p_view = view @ np.append(test_point, 1.0)
+            p_clip = proj @ p_view
+            p_ndc = p_clip[:3] / p_clip[3]
+            
+            print(f"  After view: {p_view[:3]} (w={p_view[3]:.2f})")
+            print(f"  After proj: {p_clip[:3]} (w={p_clip[3]:.2f})")
+            print(f"  NDC: {p_ndc}")
+            print(f"  In frustum: {-1 <= p_ndc[0] <= 1 and -1 <= p_ndc[1] <= 1 and -1 <= p_ndc[2] <= 1}")
+            
+            # Check how many points in frustum
+            all_view = (view @ np.column_stack([data[:,:3], np.ones(num_points)]).T).T
+            all_clip = (proj @ all_view.T).T
+            all_ndc = all_clip[:,:3] / all_clip[:,3:4]
+            in_frustum = np.sum(
+                (all_ndc[:,0] >= -1) & (all_ndc[:,0] <= 1) &
+                (all_ndc[:,1] >= -1) & (all_ndc[:,1] <= 1) &
+                (all_ndc[:,2] >= -1) & (all_ndc[:,2] <= 1)
+            )
+            print(f"\nPoints in view frustum: {in_frustum}/{num_points}")
+        
+        # Clear screen
+        state.ctx.clear(0.1, 0.1, 0.15, .005)
+        
+        # Get matrices from camera
+        width, height = glfw.get_framebuffer_size(window)
+        aspect = width / height
+        view_matrix = state.cam.get_view_matrix()
+        proj_matrix = state.cam.get_projection_matrix(aspect)
+        
+        # Set uniforms for rendering
+        render_program['view'].write(view_matrix)
+        render_program['projection'].write(proj_matrix)
+        
+        # Render points
+        vao.render(moderngl.POINTS)
 
         glfw.swap_buffers(window)
+        frame_count += 1
+        time.sleep(0.01)  # Small delay to limit frame rate
 
     glfw.terminate()
     
