@@ -275,7 +275,7 @@ def glfw_init(state_global: State,title: str = "Lorenz Attractor") -> None:  # I
                 )
                 state.window_state.is_fullscreen = False
     
-    def make_mouse_callback(cam) -> function:
+    def make_mouse_callback(cam) -> None:
         def mouse_callback(window, button, action, mods):
             if button == glfw.MOUSE_BUTTON_1 and action == glfw.PRESS:
                 state.input_state.mouse_pressed = True
@@ -283,15 +283,15 @@ def glfw_init(state_global: State,title: str = "Lorenz Attractor") -> None:  # I
                 state.input_state.mouse_pressed = False
         return mouse_callback
     
-    def make_scroll_callback(cam) -> function:
+    def make_scroll_callback(cam) -> None:
         def scroll_callback(window, xoffset, yoffset):
             if yoffset > 0:
                 state.input_state.scroll_delta = yoffset
             elif yoffset < 0:
                 state.input_state.scroll_delta = yoffset
         return scroll_callback
-    
-    def make_cursor_pos_callback(cam) -> function:
+
+    def make_cursor_pos_callback(cam) -> None:
         def cursor_pos_callback(window, xpos, ypos):
             state.input_state.mouse_delta[0] += xpos - state.input_state.mouse_pos[0] # Update mouse position and delta
             state.input_state.mouse_delta[1] += ypos - state.input_state.mouse_pos[1] # Update mouse position and delta
