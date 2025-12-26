@@ -115,8 +115,8 @@ class State:
     def update(self, dt: float = 0.016) -> None:
         if abs(self.input_state.scroll_delta) > 0:
             self.cam.distance -= self.input_state.scroll_delta * 10.0
-            self.cam.distance = np.clip(self.cam.distance, 10.0, 300.0)
-        
+            self.cam.distance = np.clip(self.cam.distance, -300.0, 300.0)
+
         # ONLY rotate when mouse button is held
         if self.input_state.mouse_pressed:
             self.cam.rotation[0] += self.input_state.mouse_delta[1] * 0.2
@@ -126,31 +126,6 @@ class State:
         # Reset deltas
         self.input_state.mouse_delta[:] = 0
         self.input_state.scroll_delta = 0
-
-def lorenz_map(x: float, y: float, z: float, sigma: float = 10.0, 
-               rho: float = 28.0, beta: float = 8.0/3.0) -> np.ndarray:
-    dx = sigma * (y - x)
-    dy = x * (rho - z) - y
-    dz = x * y - beta * z
-    return np.array([dx, dy, dz], dtype=np.float32)
-
-@njit(parallel=True)
-def lorenz_system(points: np.ndarray, dt: float = 0.001, sigma: float = 10.0, 
-                  rho: float = 28.0, beta: float = 8.0/3.0, steps: int = 50) -> np.ndarray:
-
-    points_local = points.copy()
-
-    for point in prange(points_local.shape[0]):
-        for _ in range(steps):
-            dx = sigma * (points_local[point, 1] - points_local[point, 0])
-            dy = points_local[point, 0] * (rho - points_local[point, 2]) - points_local[point, 1]
-            dz = points_local[point, 0] * points_local[point, 1] - beta * points_local[point, 2]
-            points_local[point, 0] += dx * dt
-            points_local[point, 1] += dy * dt
-            points_local[point, 2] += dz * dt
-
-    return points_local
-
 
 def create_compute_shader():
     COMPUTE_SHADER = """
@@ -210,7 +185,6 @@ def create_vertex_shader():
     return VERTEX_SHADER
 
 def create_fragment_shader():
-    
     FRAGMENT_SHADER = """
     #version 330
 
@@ -225,13 +199,11 @@ def create_fragment_shader():
     return FRAGMENT_SHADER
 
 
-# Initializes GLFW and sets callbacks
-def glfw_init(state_global: State,title: str = "Lorenz Attractor"): 
+def glfw_init(state_global: State,title: str = "Lorenz Attractor"):  # Initializes GLFW and sets callbacks
 
     if not glfw.init():
         raise RuntimeError("Failed to initialize GLFW")
 
-    # Request OpenGL context compatible with ModernGL
     glfw.window_hint(glfw.CONTEXT_VERSION_MAJOR, 3)
     glfw.window_hint(glfw.CONTEXT_VERSION_MINOR, 3)
     glfw.window_hint(glfw.OPENGL_PROFILE, glfw.OPENGL_CORE_PROFILE)
@@ -239,11 +211,7 @@ def glfw_init(state_global: State,title: str = "Lorenz Attractor"):
     glfw.window_hint(glfw.RESIZABLE, glfw.TRUE) # Allow resizing
 
     state = state_global
-    cam = state.cam
-    window_state = state.window_state
-    input_state = state.input_state
     
-    # Fullscreen resolution
     monitor = glfw.get_primary_monitor()
     mode = glfw.get_video_mode(monitor)
     window = glfw.create_window(mode.size.width, mode.size.height, title, monitor, None)
@@ -254,7 +222,7 @@ def glfw_init(state_global: State,title: str = "Lorenz Attractor"):
     glfw.make_context_current(window)
     glfw.swap_interval(1)
 
-    state.ctx = moderngl.create_context() # Create ModernGL context
+    state.ctx = moderngl.create_context()         # Create ModernGL context
     state.ctx.enable(moderngl.DEPTH_TEST)
     state.ctx.enable(moderngl.PROGRAM_POINT_SIZE)
 
@@ -262,37 +230,36 @@ def glfw_init(state_global: State,title: str = "Lorenz Attractor"):
     def framebuffer_size_callback(window, width, height): # Sets the viewport to the current framebuffer size
         if width == 0 or height == 0:
             return
-
-        ctx = moderngl.get_context()
-        ctx.viewport = (0, 0, width, height)
+        state.ctx = moderngl.get_context()
+        state.ctx.viewport = (0, 0, width, height)
+    
     def key_callback(window, key, scancode, action, mods):
         """
         Handles key presses:
         - F11: toggle fullscreen
         - ESC: switch to windowed mode with a smaller default size
         """
-        
         def toggle_fullscreen(window): # Toggles between fullscreen and windowed mode
 
             monitor = glfw.get_primary_monitor()
             mode = glfw.get_video_mode(monitor)
 
-            if window_state.is_fullscreen:
+            if state.window_state.is_fullscreen:
                 # Save windowed size and position
-                window_state.windowed_pos = glfw.get_window_pos(window)
-                window_state.windowed_size = glfw.get_window_size(window)
+                state.window_state.windowed_pos = glfw.get_window_pos(window)
+                state.window_state.windowed_size = glfw.get_window_size(window)
 
                 # Switch to windowed mode
                 glfw.set_window_monitor(
                     window,
                     None,                        # windowed
-                    window_state.windowed_pos[0],
-                    window_state.windowed_pos[1],
-                    window_state.windowed_size[0],
-                    window_state.windowed_size[1],
+                    state.window_state.windowed_pos[0],
+                    state.window_state.windowed_pos[1],
+                    state.window_state.windowed_size[0],
+                    state.window_state.windowed_size[1],
                     0
                 )
-                window_state.is_fullscreen = False
+                state.window_state.is_fullscreen = False
 
             else:
                 # Switch to fullscreen
@@ -305,66 +272,55 @@ def glfw_init(state_global: State,title: str = "Lorenz Attractor"):
                     mode.size.height,
                     mode.refresh_rate
                 )
-                window_state.is_fullscreen = True
+                state.window_state.is_fullscreen = True
 
         if key == glfw.KEY_F11 and action == glfw.PRESS:
             toggle_fullscreen(window)
 
         if key == glfw.KEY_ESCAPE and action == glfw.PRESS:
-            if window_state.is_fullscreen:
+            if state.window_state.is_fullscreen:
                 # Set default windowed position and size
-                window_state.windowed_pos = (100, 100)
-                window_state.windowed_size = (1280, 800)
+                state.window_state.windowed_pos = (100, 100)
+                state.window_state.windowed_size = (1280, 800)
                 glfw.set_window_monitor(
                     window,
                     None,             # windowed mode
-                    window_state.windowed_pos[0],
-                    window_state.windowed_pos[1],
-                    window_state.windowed_size[0],
-                    window_state.windowed_size[1],
+                    state.window_state.windowed_pos[0],
+                    state.window_state.windowed_pos[1],
+                    state.window_state.windowed_size[0],
+                    state.window_state.windowed_size[1],
                     0
                 )
-                window_state.is_fullscreen = False
+                state.window_state.is_fullscreen = False
+    
     def make_mouse_callback(cam):
-
         def mouse_callback(window, button, action, mods):
             if button == glfw.MOUSE_BUTTON_1 and action == glfw.PRESS:
-                input_state.mouse_pressed = True
-                print("Mouse button left pressed")
-                # TODO: Implement mouse position tracking here
+                state.input_state.mouse_pressed = True
             elif button == glfw.MOUSE_BUTTON_1 and action == glfw.RELEASE:
-                input_state.mouse_pressed = False
-                print("Mouse button left released")
-
+                state.input_state.mouse_pressed = False
         return mouse_callback
+    
     def make_scroll_callback(cam):
-
         def scroll_callback(window, xoffset, yoffset):
             if yoffset > 0:
                 state.input_state.scroll_delta = yoffset
-                print("Mouse scrolled up")
             elif yoffset < 0:
                 state.input_state.scroll_delta = yoffset
-                print("Mouse scrolled down")
-
         return scroll_callback
+    
     def make_cursor_pos_callback(cam):
         def cursor_pos_callback(window, xpos, ypos):
-            #print(f"Mouse cursor at ({xpos}, {ypos})")
-            # Update mouse position and delta
-            inp = state.input_state
-            inp.mouse_delta[0] += xpos - inp.mouse_pos[0]
-            inp.mouse_delta[1] += ypos - inp.mouse_pos[1]
-            inp.mouse_pos[:] = (xpos, ypos)
+            state.input_state.mouse_delta[0] += xpos - state.input_state.mouse_pos[0] # Update mouse position and delta
+            state.input_state.mouse_delta[1] += ypos - state.input_state.mouse_pos[1] # Update mouse position and delta
+            state.input_state.mouse_pos[:] = (xpos, ypos)
         return cursor_pos_callback
     
     glfw.set_framebuffer_size_callback(window, framebuffer_size_callback)
     glfw.set_key_callback(window, key_callback)
-    glfw.set_mouse_button_callback(window, make_mouse_callback(cam))    # I use this format to keep cam within the scope of the callback
-    glfw.set_scroll_callback(window, make_scroll_callback(cam))
-    glfw.set_cursor_pos_callback(window, make_cursor_pos_callback(cam)) 
-
-    
+    glfw.set_mouse_button_callback(window, make_mouse_callback(state.cam))    # I use this format to keep cam within the scope of the callback
+    glfw.set_scroll_callback(window, make_scroll_callback(state.cam))
+    glfw.set_cursor_pos_callback(window, make_cursor_pos_callback(state.cam)) 
 
     # Set initial viewport
     width, height = glfw.get_framebuffer_size(window)
@@ -382,30 +338,22 @@ def create_inital_points(num_points: int) -> np.ndarray:
 def setup_compute_program(ctx):
     compute_program = ctx.compute_shader(create_compute_shader())
     compute_program['dt'] = 0.0001
-    compute_program['sigma'] = 11.0
-    compute_program['rho'] = 29.0
-    compute_program['beta'] = 8.0 / 5.0
+    compute_program['sigma'] = 10.0
+    compute_program['rho'] = 28.0
+    compute_program['beta'] = 8.0 / 3.0
     compute_program['steps'] = 50
     return compute_program
 
 def main():
 
-    # Starting parameters
     state = State()
     window = glfw_init(state)
 
     # Initialize points near the attractor starting region
-    num_points = 100000
+    num_points = 10000
     initial_points = create_inital_points(num_points)
-    
-    print("=== INITIAL SETUP ===")
-    print(f"Initial points range:")
-    print(f"  X: [{initial_points[:,0].min():.2f}, {initial_points[:,0].max():.2f}]")
-    print(f"  Y: [{initial_points[:,1].min():.2f}, {initial_points[:,1].max():.2f}]")
-    print(f"  Z: [{initial_points[:,2].min():.2f}, {initial_points[:,2].max():.2f}]")
 
-    # Create buffer (used by both compute and render)
-    points_buffer = state.ctx.buffer(initial_points)
+    points_buffer = state.ctx.buffer(initial_points) # Create buffer (used by both compute and render)
 
     compute_program = setup_compute_program(state.ctx)
 
@@ -428,51 +376,6 @@ def main():
         
         # Run compute shader (update Lorenz system)
         compute_program.run(group_x=(num_points + 255) // 256)
-        if frame_count == 1:
-            data = np.frombuffer(points_buffer.read(), dtype=np.float32).reshape(-1, 4)
-            print(f"\n=== FRAME 1 DEBUG ===")
-            print(f"Points after compute:")
-            print(f"  X: [{data[:,0].min():.2f}, {data[:,0].max():.2f}]")
-            print(f"  Y: [{data[:,1].min():.2f}, {data[:,1].max():.2f}]")
-            print(f"  Z: [{data[:,2].min():.2f}, {data[:,2].max():.2f}]")
-            
-            cam_pos = state.cam.get_position()
-            print(f"\nCamera:")
-            print(f"  Position: {cam_pos}")
-            print(f"  Target: {state.cam.position_center}")
-            print(f"  Distance to target: {np.linalg.norm(cam_pos - state.cam.position_center):.2f}")
-            print(f"  Rotation: {state.cam.rotation}")
-            print(f"  FOV: {state.cam.fov}")
-            
-            # Test: manually transform one point
-            test_point = data[0, :3]
-            print(f"\nTest point: {test_point}")
-            
-            # Get matrices
-            width, height = glfw.get_framebuffer_size(window)
-            view = state.cam.get_view_matrix().reshape(4, 4)
-            proj = state.cam.get_projection_matrix(width/height).reshape(4, 4)
-            
-            # Transform test point
-            p_view = view @ np.append(test_point, 1.0)
-            p_clip = proj @ p_view
-            p_ndc = p_clip[:3] / p_clip[3]
-            
-            print(f"  After view: {p_view[:3]} (w={p_view[3]:.2f})")
-            print(f"  After proj: {p_clip[:3]} (w={p_clip[3]:.2f})")
-            print(f"  NDC: {p_ndc}")
-            print(f"  In frustum: {-1 <= p_ndc[0] <= 1 and -1 <= p_ndc[1] <= 1 and -1 <= p_ndc[2] <= 1}")
-            
-            # Check how many points in frustum
-            all_view = (view @ np.column_stack([data[:,:3], np.ones(num_points)]).T).T
-            all_clip = (proj @ all_view.T).T
-            all_ndc = all_clip[:,:3] / all_clip[:,3:4]
-            in_frustum = np.sum(
-                (all_ndc[:,0] >= -1) & (all_ndc[:,0] <= 1) &
-                (all_ndc[:,1] >= -1) & (all_ndc[:,1] <= 1) &
-                (all_ndc[:,2] >= -1) & (all_ndc[:,2] <= 1)
-            )
-            print(f"\nPoints in view frustum: {in_frustum}/{num_points}")
         
         # Clear screen
         state.ctx.clear(0.1, 0.1, 0.15, .005)
