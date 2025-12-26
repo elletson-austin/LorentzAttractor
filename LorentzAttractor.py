@@ -8,23 +8,16 @@ import time
 @dataclass
 class Camera:
     position_center: np.ndarray = field(
-        default_factory=lambda: np.array([0.0, 20.0, 25.0], dtype=np.float32)  # ✓ Lorenz center
+        default_factory=lambda: np.array([0.0, 20.0, 25.0], dtype=np.float32)  
     )
     rotation: np.ndarray = field(
-        default_factory=lambda: np.array([20.0, 45.0, 0.0], dtype=np.float32)  # ✓ Good angle
+        default_factory=lambda: np.array([20.0, 45.0, 0.0], dtype=np.float32)  
     )
-    fov: float = 130.0  # ✓ Narrower FOV
-    distance: float = 300.0  # ✓ Farther back
-
-    def zoom(self, zoom_amount: float) -> None: # Multiplicative change in fov as well as clamping
-        self.fov *= zoom_amount
-        if self.fov < 10.0:
-            self.fov = 10.0
-        if self.fov > 180.0:
-            self.fov = 180.0
+    fov: float = 80.0  
+    distance: float = 50.0  
 
     # Returns the current position of the camera [x, y, z]
-    def get_position(self): # Calculate the camera position based on the orientation, distance and center
+    def get_position(self) -> np.ndarray: # Calculate the camera position based on the orientation, distance and center
         
         pitch = np.radians(self.rotation[0])
         yaw = np.radians(self.rotation[1])   
@@ -35,7 +28,7 @@ class Camera:
 
         return self.position_center + np.array([x, y, z], dtype=np.float32)
 
-    def get_view_matrix(self):
+    def get_view_matrix(self) -> np.ndarray:
         cam_pos = self.get_position()
         target = self.position_center
         world_up = np.array([0, 1, 0], dtype=np.float32)
@@ -64,17 +57,11 @@ class Camera:
         
         return view.T.flatten()
 
-    def get_projection_matrix(self, aspect_ratio):
-        """
-        Returns 4x4 perspective projection matrix as flattened array for OpenGL.
-        Creates the "things far away look smaller" effect.
+    def get_projection_matrix(self, width, height) -> np.ndarray: #Returns 4x4 perspective projection matrix as flattened array for OpenGL.
         
-        aspect_ratio: width / height (prevents stretching)
-        """
-        
-        # Convert FOV to radians and set clipping planes
+        aspect_ratio = width / height
         fov_rad = np.radians(self.fov)  # Field of view in radians
-        near = 0.1     # Near clipping plane (minimum render distance)
+        near = 0.01     # Near clipping plane (minimum render distance)
         far = 500.0    # Far clipping plane (maximum render distance)
         focal_len = 1.0 / np.tan(fov_rad / 2.0)  # Calculate focal length (controls zoom)
 
@@ -85,7 +72,6 @@ class Camera:
         proj[2, 3] = (2.0 * far * near) / (near - far)
         proj[3, 2] = -1.0
         
-        # Notably proj[3, 3] = 0 (not 1!) because we want w' = -z, not w' = -z + 1
         return proj.T.flatten()
 
 @dataclass
@@ -102,6 +88,7 @@ class InputState: # Tracks the state of the input devices
     mouse_delta: np.ndarray = field(
         default_factory=lambda: np.array([0, 0], dtype=np.float32)
     )
+    keys_held: set = field(default_factory=set)
     mouse_pressed: bool = False
     scroll_delta: float = 0.0
 
@@ -113,21 +100,48 @@ class State:
     ctx: moderngl.Context = field(default=None)
 
     def update(self, dt: float = 0.016) -> None:
-        if abs(self.input_state.scroll_delta) > 0:
-            self.cam.distance -= self.input_state.scroll_delta * 10.0
-            self.cam.distance = np.clip(self.cam.distance, -300.0, 300.0)
 
-        # ONLY rotate when mouse button is held
+        keys = self.input_state.keys_held
+
+        if abs(self.input_state.scroll_delta) > 0:
+            self.cam.distance -= self.input_state.scroll_delta * 1.0
+            self.cam.distance = np.clip(self.cam.distance, 1.0, 300.0)
+
         if self.input_state.mouse_pressed:
-            self.cam.rotation[0] += self.input_state.mouse_delta[1] * 0.2
-            self.cam.rotation[1] += self.input_state.mouse_delta[0] * 0.2
-            self.cam.rotation[0] = np.clip(self.cam.rotation[0], -89.0, 89.0)
+            self.cam.rotation[0] += self.input_state.mouse_delta[1] * 0.2 # Pitch
+            self.cam.rotation[1] += self.input_state.mouse_delta[0] * 0.2 # Yaw
+            self.cam.rotation[0] = np.clip(self.cam.rotation[0], -89.0, 89.0) # Prevent flipping
+            self.cam.rotation[1] = self.cam.rotation[1] % 360.0 # Wrap around
+
+        if glfw.KEY_W in keys:
+            forward = self.cam.position_center - self.cam.get_position()
+            forward /= np.linalg.norm(forward)
+            self.cam.position_center += forward * dt * 20.0
+
+        if glfw.KEY_S in keys:
+            forward = self.cam.position_center - self.cam.get_position()
+            forward /= np.linalg.norm(forward)
+            self.cam.position_center -= forward * dt * 20.0
+
+        if glfw.KEY_A in keys:
+            forward = self.cam.position_center - self.cam.get_position()
+            forward /= np.linalg.norm(forward)
+            right = np.cross(forward, np.array([0, 1, 0], dtype=np.float32))
+            right /= np.linalg.norm(right)
+            self.cam.position_center -= right * dt * 20.0
+
+        if glfw.KEY_D in keys:
+            forward = self.cam.position_center - self.cam.get_position()
+            forward /= np.linalg.norm(forward)
+            right = np.cross(forward, np.array([0, 1, 0], dtype=np.float32))
+            right /= np.linalg.norm(right)
+            self.cam.position_center += right * dt * 20.0
 
         # Reset deltas
         self.input_state.mouse_delta[:] = 0
         self.input_state.scroll_delta = 0
 
-def create_compute_shader():
+def create_compute_shader() -> str:
     COMPUTE_SHADER = """
     #version 430
 
@@ -165,7 +179,7 @@ def create_compute_shader():
     """
     return COMPUTE_SHADER
     
-def create_vertex_shader():
+def create_vertex_shader() -> str:
     VERTEX_SHADER = """
     #version 330
 
@@ -184,7 +198,7 @@ def create_vertex_shader():
     """
     return VERTEX_SHADER
 
-def create_fragment_shader():
+def create_fragment_shader() -> str:
     FRAGMENT_SHADER = """
     #version 330
 
@@ -199,7 +213,7 @@ def create_fragment_shader():
     return FRAGMENT_SHADER
 
 
-def glfw_init(state_global: State,title: str = "Lorenz Attractor"):  # Initializes GLFW and sets callbacks
+def glfw_init(state_global: State,title: str = "Lorenz Attractor") -> None:  # Initializes GLFW and sets callbacks
 
     if not glfw.init():
         raise RuntimeError("Failed to initialize GLFW")
@@ -227,56 +241,24 @@ def glfw_init(state_global: State,title: str = "Lorenz Attractor"):  # Initializ
     state.ctx.enable(moderngl.PROGRAM_POINT_SIZE)
 
     # Set GLFW callbacks
-    def framebuffer_size_callback(window, width, height): # Sets the viewport to the current framebuffer size
+    def framebuffer_size_callback(window, width, height) -> None: # Sets the viewport to the current framebuffer size
         if width == 0 or height == 0:
             return
         state.ctx = moderngl.get_context()
         state.ctx.viewport = (0, 0, width, height)
-    
-    def key_callback(window, key, scancode, action, mods):
+
+    def key_callback(window, key, scancode, action, mods) -> None:
         """
         Handles key presses:
         - F11: toggle fullscreen
         - ESC: switch to windowed mode with a smaller default size
         """
-        def toggle_fullscreen(window): # Toggles between fullscreen and windowed mode
 
-            monitor = glfw.get_primary_monitor()
-            mode = glfw.get_video_mode(monitor)
-
-            if state.window_state.is_fullscreen:
-                # Save windowed size and position
-                state.window_state.windowed_pos = glfw.get_window_pos(window)
-                state.window_state.windowed_size = glfw.get_window_size(window)
-
-                # Switch to windowed mode
-                glfw.set_window_monitor(
-                    window,
-                    None,                        # windowed
-                    state.window_state.windowed_pos[0],
-                    state.window_state.windowed_pos[1],
-                    state.window_state.windowed_size[0],
-                    state.window_state.windowed_size[1],
-                    0
-                )
-                state.window_state.is_fullscreen = False
-
-            else:
-                # Switch to fullscreen
-                glfw.set_window_monitor(
-                    window,
-                    monitor,
-                    0,
-                    0,
-                    mode.size.width,
-                    mode.size.height,
-                    mode.refresh_rate
-                )
-                state.window_state.is_fullscreen = True
-
-        if key == glfw.KEY_F11 and action == glfw.PRESS:
-            toggle_fullscreen(window)
-
+        # Track all key presses/releases
+        if action == glfw.PRESS:
+            state.input_state.keys_held.add(key)
+        elif action == glfw.RELEASE:
+            state.input_state.keys_held.discard(key)
         if key == glfw.KEY_ESCAPE and action == glfw.PRESS:
             if state.window_state.is_fullscreen:
                 # Set default windowed position and size
@@ -293,7 +275,7 @@ def glfw_init(state_global: State,title: str = "Lorenz Attractor"):  # Initializ
                 )
                 state.window_state.is_fullscreen = False
     
-    def make_mouse_callback(cam):
+    def make_mouse_callback(cam) -> function:
         def mouse_callback(window, button, action, mods):
             if button == glfw.MOUSE_BUTTON_1 and action == glfw.PRESS:
                 state.input_state.mouse_pressed = True
@@ -301,7 +283,7 @@ def glfw_init(state_global: State,title: str = "Lorenz Attractor"):  # Initializ
                 state.input_state.mouse_pressed = False
         return mouse_callback
     
-    def make_scroll_callback(cam):
+    def make_scroll_callback(cam) -> function:
         def scroll_callback(window, xoffset, yoffset):
             if yoffset > 0:
                 state.input_state.scroll_delta = yoffset
@@ -309,7 +291,7 @@ def glfw_init(state_global: State,title: str = "Lorenz Attractor"):  # Initializ
                 state.input_state.scroll_delta = yoffset
         return scroll_callback
     
-    def make_cursor_pos_callback(cam):
+    def make_cursor_pos_callback(cam) -> function:
         def cursor_pos_callback(window, xpos, ypos):
             state.input_state.mouse_delta[0] += xpos - state.input_state.mouse_pos[0] # Update mouse position and delta
             state.input_state.mouse_delta[1] += ypos - state.input_state.mouse_pos[1] # Update mouse position and delta
@@ -335,7 +317,7 @@ def create_inital_points(num_points: int) -> np.ndarray:
     initial_points[:, 3] = 1.0  # w component
     return initial_points
 
-def setup_compute_program(ctx):
+def setup_compute_program(ctx) -> moderngl.ComputeShader:
     compute_program = ctx.compute_shader(create_compute_shader())
     compute_program['dt'] = 0.0001
     compute_program['sigma'] = 10.0
@@ -344,13 +326,13 @@ def setup_compute_program(ctx):
     compute_program['steps'] = 50
     return compute_program
 
-def main():
+def main() -> None:
 
     state = State()
     window = glfw_init(state)
 
     # Initialize points near the attractor starting region
-    num_points = 10000
+    num_points = 1000000
     initial_points = create_inital_points(num_points)
 
     points_buffer = state.ctx.buffer(initial_points) # Create buffer (used by both compute and render)
@@ -371,20 +353,17 @@ def main():
         glfw.poll_events()
         state.update()
 
-        # Bind buffer for compute shader
-        points_buffer.bind_to_storage_buffer(0)
+        points_buffer.bind_to_storage_buffer(0) # Bind buffer for compute shader
         
         # Run compute shader (update Lorenz system)
         compute_program.run(group_x=(num_points + 255) // 256)
         
-        # Clear screen
-        state.ctx.clear(0.1, 0.1, 0.15, .005)
+        state.ctx.clear(0.0, 0.0, 0.2, 1.0)  # Clear screen
         
         # Get matrices from camera
         width, height = glfw.get_framebuffer_size(window)
-        aspect = width / height
         view_matrix = state.cam.get_view_matrix()
-        proj_matrix = state.cam.get_projection_matrix(aspect)
+        proj_matrix = state.cam.get_projection_matrix(width, height)
         
         # Set uniforms for rendering
         render_program['view'].write(view_matrix)
