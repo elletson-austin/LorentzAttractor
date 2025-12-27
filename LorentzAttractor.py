@@ -6,7 +6,7 @@ import moderngl
 import time
 
 @dataclass
-class Camera:
+class Camera: # Represents a simple 3D camera with position, rotation, FOV, and distance
     position_center: np.ndarray = field(
         default_factory=lambda: np.array([0.0, 20.0, 25.0], dtype=np.float32)  
     )
@@ -93,7 +93,7 @@ class InputState: # Tracks the state of the input devices
     scroll_delta: float = 0.0
 
 @dataclass
-class State:
+class State: # represents the overall application state
     cam: Camera = field(default_factory=Camera)
     window_state: WindowState = field(default_factory=WindowState)
     input_state: InputState = field(default_factory=InputState)
@@ -141,78 +141,95 @@ class State:
         self.input_state.mouse_delta[:] = 0
         self.input_state.scroll_delta = 0
 
-def create_compute_shader() -> str:
-    COMPUTE_SHADER = """
-    #version 430
+class LorenzAttractor: # Holds the shaders sources and parameters for the Lorenz attractor simulation no actual rendering
+    def __init__(self, num_points: int = 1_000_000, sigma: float = 10.0, rho: float = 28.0, beta: float = 8.0 / 3.0):
+        self.sigma = sigma
+        self.rho = rho
+        self.beta = beta
+        self.num_points = num_points
+        self.compute_shader_source = self.create_compute_shader()
+        self.vertex_shader_source = self.create_vertex_shader()
+        self.fragment_shader_source = self.create_fragment_shader()
+        self.initial_points = self.create_initial_points(num_points=self.num_points)
 
-    layout(local_size_x = 256) in;
+    def create_compute_shader(self) -> str:
+        COMPUTE_SHADER = """
+        #version 430
 
-    layout(std430, binding = 0) buffer PointsBuffer {
-        vec4 points[];
-    };
+        layout(local_size_x = 256) in;
 
-    uniform float dt;
-    uniform float sigma;
-    uniform float rho;
-    uniform float beta;
-    uniform int steps;
+        layout(std430, binding = 0) buffer PointsBuffer {
+            vec4 points[];
+        };
 
-    void main() {
-        uint idx = gl_GlobalInvocationID.x;
-        if (idx >= points.length()) return;
-        
-        vec3 p = points[idx].xyz;
-        
-        // Integrate Lorenz system for 'steps' iterations
-        for (int i = 0; i < steps; i++) {
-            float dx = sigma * (p.y - p.x);
-            float dy = p.x * (rho - p.z) - p.y;
-            float dz = p.x * p.y - beta * p.z;
+        uniform float dt;
+        uniform float sigma;
+        uniform float rho;
+        uniform float beta;
+        uniform int steps;
+
+        void main() {
+            uint idx = gl_GlobalInvocationID.x;
+            if (idx >= points.length()) return;
             
-            p.x += dx * dt;
-            p.y += dy * dt;
-            p.z += dz * dt;
+            vec3 p = points[idx].xyz;
+            
+            // Integrate Lorenz system for 'steps' iterations
+            for (int i = 0; i < steps; i++) {
+                float dx = sigma * (p.y - p.x);
+                float dy = p.x * (rho - p.z) - p.y;
+                float dz = p.x * p.y - beta * p.z;
+                
+                p.x += dx * dt;
+                p.y += dy * dt;
+                p.z += dz * dt;
+            }
+            
+            points[idx].xyz = p;
         }
+        """
+        return COMPUTE_SHADER
         
-        points[idx].xyz = p;
-    }
-    """
-    return COMPUTE_SHADER
+    def create_vertex_shader(self) -> str:
+        VERTEX_SHADER = """
+        #version 330
+
+        in vec4 in_position;
+
+        uniform mat4 view;
+        uniform mat4 projection;
+
+        out vec3 frag_pos;
+
+        void main() {
+            frag_pos = in_position.xyz;
+            gl_Position = projection * view * vec4(in_position.xyz, 1.0);
+            gl_PointSize = 0.5; 
+        }
+        """
+        return VERTEX_SHADER
+
+    def create_fragment_shader(self) -> str:
+        FRAGMENT_SHADER = """
+        #version 330
+
+        in vec3 frag_pos;
+        out vec4 fragColor;
+
+        void main() {
+            // BRIGHT RED - impossible to miss
+            fragColor = vec4(1.0, 0.0, 0.0, 1.0);
+        }
+        """
+        return FRAGMENT_SHADER
+
+    def create_initial_points(self,num_points: int) -> np.ndarray:
+        initial_points = np.random.randn(num_points, 4).astype(np.float32)
+        initial_points[:, :3] *= 2.0  # Small spread
+        initial_points[:, :3] += [1.0, 1.0, 1.0]  # Center near (1,1,1)
+        initial_points[:, 3] = 1.0  # w component
+        return initial_points
     
-def create_vertex_shader() -> str:
-    VERTEX_SHADER = """
-    #version 330
-
-    in vec4 in_position;
-
-    uniform mat4 view;
-    uniform mat4 projection;
-
-    out vec3 frag_pos;
-
-    void main() {
-        frag_pos = in_position.xyz;
-        gl_Position = projection * view * vec4(in_position.xyz, 1.0);
-        gl_PointSize = 0.5; 
-    }
-    """
-    return VERTEX_SHADER
-
-def create_fragment_shader() -> str:
-    FRAGMENT_SHADER = """
-    #version 330
-
-    in vec3 frag_pos;
-    out vec4 fragColor;
-
-    void main() {
-        // BRIGHT RED - impossible to miss
-        fragColor = vec4(1.0, 0.0, 0.0, 1.0);
-    }
-    """
-    return FRAGMENT_SHADER
-
-
 def glfw_init(state_global: State,title: str = "Lorenz Attractor") -> None:  # Initializes GLFW and sets callbacks
 
     if not glfw.init():
@@ -310,45 +327,35 @@ def glfw_init(state_global: State,title: str = "Lorenz Attractor") -> None:  # I
 
     return window
 
-def create_inital_points(num_points: int) -> np.ndarray:
-    initial_points = np.random.randn(num_points, 4).astype(np.float32)
-    initial_points[:, :3] *= 2.0  # Small spread
-    initial_points[:, :3] += [1.0, 1.0, 1.0]  # Center near (1,1,1)
-    initial_points[:, 3] = 1.0  # w component
-    return initial_points
-
-def setup_compute_program(ctx) -> moderngl.ComputeShader:
-    compute_program = ctx.compute_shader(create_compute_shader())
-    compute_program['dt'] = 0.0001
-    compute_program['sigma'] = 10.0
-    compute_program['rho'] = 28.0
-    compute_program['beta'] = 8.0 / 3.0
-    compute_program['steps'] = 50
-    return compute_program
+def setup_compute_program(ctx, COMPUTE_SHADER) -> moderngl.ComputeShader:
+            compute_program = ctx.compute_shader(COMPUTE_SHADER)
+            compute_program['dt'] = 0.0001
+            compute_program['sigma'] = 10.0
+            compute_program['rho'] = 28.0
+            compute_program['beta'] = 8.0 / 3.0
+            compute_program['steps'] = 50
+            return compute_program
 
 def main() -> None:
 
     state = State()
     window = glfw_init(state)
-
+    attractor = LorenzAttractor(num_points=1_000_000)
     # Initialize points near the attractor starting region
-    num_points = 1000000
-    initial_points = create_inital_points(num_points)
 
-    points_buffer = state.ctx.buffer(initial_points) # Create buffer (used by both compute and render)
+    points_buffer = state.ctx.buffer(attractor.initial_points) # Create buffer (used by both compute and render)
 
-    compute_program = setup_compute_program(state.ctx)
-
+    compute_program = setup_compute_program(state.ctx, attractor.compute_shader_source)
     render_program = state.ctx.program(
-        vertex_shader=create_vertex_shader(),
-        fragment_shader=create_fragment_shader()
+        vertex_shader=attractor.vertex_shader_source,
+        fragment_shader=attractor.fragment_shader_source
     )
     # Create VAO (Vertex Array Object)
     vao = state.ctx.vertex_array(
         render_program,
         [(points_buffer, '4f', 'in_position')]  # 4 floats matching vec4
     )
-    frame_count = 0
+
     while not glfw.window_should_close(window):
         glfw.poll_events()
         state.update()
@@ -356,9 +363,9 @@ def main() -> None:
         points_buffer.bind_to_storage_buffer(0) # Bind buffer for compute shader
         
         # Run compute shader (update Lorenz system)
-        compute_program.run(group_x=(num_points + 255) // 256)
+        compute_program.run(group_x=(attractor.num_points + 255) // 256) 
         
-        state.ctx.clear(0.0, 0.0, 0.2, 1.0)  # Clear screen
+        state.ctx.clear(0.0, 0.1, 0.1, 1.0)  # Clear screen
         
         # Get matrices from camera
         width, height = glfw.get_framebuffer_size(window)
@@ -373,7 +380,6 @@ def main() -> None:
         vao.render(moderngl.POINTS)
 
         glfw.swap_buffers(window)
-        frame_count += 1
         time.sleep(0.01)  # Small delay to limit frame rate
 
     glfw.terminate()
