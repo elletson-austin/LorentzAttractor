@@ -1,6 +1,5 @@
 from dataclasses import dataclass, field
 import glfw
-from numba import njit, prange
 import numpy as np
 import moderngl
 import time
@@ -218,7 +217,7 @@ class LorenzAttractor: # Holds the shaders sources and parameters for the Lorenz
 
         void main() {
             // BRIGHT RED - impossible to miss
-            fragColor = vec4(1.0, 0.0, 0.0, 1.0);
+            fragColor = vec4(1.0, 0.2, 0.2, 1.0);
         }
         """
         return FRAGMENT_SHADER
@@ -365,7 +364,7 @@ def main() -> None:
         # Run compute shader (update Lorenz system)
         compute_program.run(group_x=(attractor.num_points + 255) // 256) 
         
-        state.ctx.clear(0.0, 0.1, 0.1, 1.0)  # Clear screen
+        state.ctx.clear(0.0, 0.2, 0.2, 1.0)  # Clear screen
         
         # Get matrices from camera
         width, height = glfw.get_framebuffer_size(window)
